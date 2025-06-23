@@ -13,7 +13,6 @@ async def process_document_with_prompt(document, prompt, batch_run, db):
     In a real implementation, this would call your document processing logic.
     """
     try:
-        # Simulate document processing - replace with actual implementation
         response = f"Processed document '{document.name}' with prompt '{prompt.name}'"
         
         result = Result(
@@ -66,7 +65,6 @@ async def process_batch_run(batch_run_id):
 async def process_document_queries(document: Document, db) -> None:
     """Process a document against all existing queries"""
     try:
-        # Get all document sets with queries
         sets = db.query(DocumentSet).all()
         
         for doc_set in sets:
@@ -98,15 +96,13 @@ async def check_and_process_scheduled_runs():
         try:
             db = init_db()()
             
-            # Process any new documents against existing queries
             new_documents = db.query(Document).filter(
-                ~Document.sets.any()  # Documents not in any sets
+                ~Document.sets.any()  
             ).all()
             
             for doc in new_documents:
                 await process_document_queries(doc, db)
             
-            # Find scheduled runs that should start now
             pending_runs = db.query(BatchRun).filter(
                 and_(
                     BatchRun.status == 'pending',
@@ -122,9 +118,7 @@ async def check_and_process_scheduled_runs():
         except Exception as e:
             logger.error(f"Error checking scheduled runs: {str(e)}")
         
-        # Check every minute
         await asyncio.sleep(60)
 
-# Function to start the background processor
 def start_background_processor():
     asyncio.create_task(check_and_process_scheduled_runs()) 

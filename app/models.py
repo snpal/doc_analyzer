@@ -6,7 +6,6 @@ from sqlalchemy.ext.declarative import declared_attr
 
 Base = declarative_base()
 
-# Association tables for many-to-many relationships
 document_batch = Table(
     'document_batch',
     Base.metadata,
@@ -66,9 +65,9 @@ class DocumentQuery(Base):
     id = Column(Integer, primary_key=True)
     set_id = Column(Integer, ForeignKey('document_sets.id'))
     name = Column(String, nullable=False)
-    query_type = Column(String, nullable=False)  # 'name', 'content', 'file_type'
+    query_type = Column(String, nullable=False)
     query_value = Column(String, nullable=False)
-    operator = Column(String, nullable=False)  # 'contains', 'equals', 'startswith', etc.
+    operator = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     document_set = relationship('DocumentSet', back_populates='queries')
@@ -104,9 +103,9 @@ class PromptQuery(Base):
     id = Column(Integer, primary_key=True)
     set_id = Column(Integer, ForeignKey('prompt_sets.id'))
     name = Column(String, nullable=False)
-    query_type = Column(String, nullable=False)  # 'name', 'content'
+    query_type = Column(String, nullable=False)
     query_value = Column(String, nullable=False)
-    operator = Column(String, nullable=False)  # 'contains', 'equals', 'startswith', etc.
+    operator = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     prompt_set = relationship('PromptSet', back_populates='queries')
@@ -116,10 +115,12 @@ class BatchRun(Base):
     
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
-    status = Column(String, default='pending')  # pending, running, completed, failed
-    scheduled_for = Column(DateTime, nullable=False)
+    description = Column(String)
+    status = Column(String, default='pending')
+    scheduled_for = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
+    rejection_reason = Column(String)
     
     documents = relationship('Document', secondary=document_batch, back_populates='batch_runs')
     prompts = relationship('Prompt', secondary=prompt_batch, back_populates='batch_runs')
@@ -145,13 +146,12 @@ class Feedback(Base):
     
     id = Column(Integer, primary_key=True)
     result_id = Column(Integer, ForeignKey('results.id'))
-    rating = Column(Integer)  # 1-5 rating
+    rating = Column(Integer)
     comment = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     result = relationship('Result', back_populates='feedback')
 
-# Database initialization
 def init_db(db_url='sqlite:///doc_analyzer.db'):
     engine = create_engine(db_url)
     Base.metadata.create_all(engine)

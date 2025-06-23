@@ -62,27 +62,67 @@ sample_sets = [
 
 sample_batch_runs = [
     {
-        'name': 'Initial Analysis',
+        'name': 'Q1 Documentation Review',
+        'description': 'Comprehensive review of all Q1 project documentation including technical specs, meeting minutes, and project proposals. Focus on identifying project risks and timeline adherence.',
         'status': 'completed',
-        'scheduled_for': datetime.utcnow() - timedelta(days=1),
-        'completed_at': datetime.utcnow() - timedelta(hours=22),
+        'scheduled_for': datetime.utcnow() - timedelta(days=5),
+        'completed_at': datetime.utcnow() - timedelta(days=4, hours=18),
     },
     {
-        'name': 'Technical Documentation Review',
+        'name': 'Security Implementation Analysis',
+        'description': 'Detailed analysis of security implementation documents. Review OAuth2 configuration, rate limiting setup, and API endpoint security measures. Critical for compliance requirements.',
         'status': 'completed',
-        'scheduled_for': datetime.utcnow() - timedelta(days=2),
-        'completed_at': datetime.utcnow() - timedelta(days=1, hours=20),
+        'scheduled_for': datetime.utcnow() - timedelta(days=3),
+        'completed_at': datetime.utcnow() - timedelta(days=2, hours=14),
     },
     {
-        'name': 'Project Updates Analysis',
+        'name': 'Sprint Planning Documents',
+        'description': 'Analysis of upcoming sprint planning documents including resource allocation, task breakdowns, and dependency mapping. Will help identify potential bottlenecks.',
         'status': 'running',
-        'scheduled_for': datetime.utcnow() - timedelta(hours=1),
+        'scheduled_for': datetime.utcnow() - timedelta(hours=2),
         'completed_at': None,
     },
     {
-        'name': 'Weekly Document Review',
-        'status': 'pending',
+        'name': 'Infrastructure Upgrade Impact',
+        'description': 'Assessment of infrastructure upgrade impact across all system components. Includes analysis of hardware requirements, deployment strategies, and migration risks.',
+        'status': 'pending_approval',
         'scheduled_for': datetime.utcnow() + timedelta(days=1),
+        'completed_at': None,
+    },
+    {
+        'name': 'User Training Materials Review',
+        'description': 'Comprehensive review of all user training materials and documentation. Focus on clarity, completeness, and alignment with system functionality.',
+        'status': 'approved',
+        'scheduled_for': datetime.utcnow() + timedelta(hours=16),
+        'completed_at': None,
+    },
+    {
+        'name': 'Data Migration Plan Analysis',
+        'description': 'Analysis failed due to missing database schema mappings and incomplete source data documentation.',
+        'status': 'failed',
+        'scheduled_for': datetime.utcnow() - timedelta(hours=8),
+        'completed_at': datetime.utcnow() - timedelta(hours=7),
+    },
+    {
+        'name': 'Legacy System Comparison',
+        'description': 'Comparative analysis between current system and legacy system documentation.',
+        'status': 'rejected',
+        'rejection_reason': 'Legacy system documentation is outdated (last updated 2+ years ago). Please obtain updated documentation before proceeding with the analysis.',
+        'scheduled_for': None,
+        'completed_at': None,
+    },
+    {
+        'name': 'Vendor Integration Specs',
+        'description': 'Review of vendor integration specifications and API documentation for upcoming third-party integrations.',
+        'status': 'pending_approval',
+        'scheduled_for': datetime.utcnow() + timedelta(days=2),
+        'completed_at': None,
+    },
+    {
+        'name': 'Compliance Requirements Update',
+        'description': 'Analysis of updated compliance requirements and their impact on existing system documentation.',
+        'status': 'approved',
+        'scheduled_for': datetime.utcnow() + timedelta(days=1, hours=4),
         'completed_at': None,
     }
 ]
@@ -106,7 +146,8 @@ sample_results = {
         'Key Findings': {
             'response': 'The project has clear metrics for success: 25% improvement in customer satisfaction and 40% reduction in response time. Budget and timeline are well-defined.',
             'feedback': [
-                {'rating': 4, 'comment': 'Good analysis but could include ROI estimates'}
+                {'rating': 4, 'comment': 'Good analysis but could include ROI estimates'},
+                {'rating': 3, 'comment': 'Missing analysis of resource allocation'}
             ]
         }
     },
@@ -115,19 +156,22 @@ sample_results = {
             'response': 'The system requires modern infrastructure with Python 3.11+ and PostgreSQL 13+. API design follows RESTful principles with proper security measures including OAuth2 and rate limiting.',
             'feedback': [
                 {'rating': 3, 'comment': 'Missed some technical details about scalability'},
-                {'rating': 4, 'comment': 'Good coverage of security aspects'}
+                {'rating': 4, 'comment': 'Good coverage of security aspects'},
+                {'rating': 5, 'comment': 'Excellent API endpoint documentation'}
             ]
         },
         'Key Findings': {
             'response': 'The technical specifications are comprehensive, covering system requirements, API endpoints, and security measures. Hardware requirements are clearly specified.',
             'feedback': [
-                {'rating': 5, 'comment': 'Perfect summary of technical requirements'}
+                {'rating': 5, 'comment': 'Perfect summary of technical requirements'},
+                {'rating': 4, 'comment': 'Well-structured but could include deployment steps'}
             ]
         },
         'Risk Assessment': {
             'response': 'System requirements may pose upgrade challenges for existing infrastructure. Security implementation (OAuth2) will require careful configuration.',
             'feedback': [
-                {'rating': 4, 'comment': 'Good security considerations'}
+                {'rating': 4, 'comment': 'Good security considerations'},
+                {'rating': 3, 'comment': 'Should mention potential scalability risks'}
             ]
         }
     },
@@ -142,13 +186,15 @@ sample_results = {
         'Document Summary': {
             'response': 'Meeting held on March 15 with John, Sarah, and Mike. Key action items assigned including security audit, training materials, and vendor coordination.',
             'feedback': [
-                {'rating': 4, 'comment': 'Good summary but could include meeting duration'}
+                {'rating': 4, 'comment': 'Good summary but could include meeting duration'},
+                {'rating': 5, 'comment': 'Excellent capture of key points and assignments'}
             ]
         },
         'Key Findings': {
             'response': 'Three main tasks were assigned with one specific deadline. Team is focusing on security, training, and vendor management aspects.',
             'feedback': [
-                {'rating': 4, 'comment': 'Clear identification of main points'}
+                {'rating': 4, 'comment': 'Clear identification of main points'},
+                {'rating': 3, 'comment': 'Could highlight priority order of tasks'}
             ]
         }
     }
@@ -197,9 +243,11 @@ def initialize_sample_data():
     for batch_data in sample_batch_runs:
         batch_run = BatchRun(
             name=batch_data['name'],
+            description=batch_data['description'],
             status=batch_data['status'],
             scheduled_for=batch_data['scheduled_for'],
-            completed_at=batch_data['completed_at']
+            completed_at=batch_data['completed_at'],
+            rejection_reason=batch_data.get('rejection_reason')
         )
         db.add(batch_run)
         
@@ -212,30 +260,30 @@ def initialize_sample_data():
                 batch_run.prompts.append(prompt)
             
             # Add results and feedback
-            for doc_name, prompt_results in sample_results.items():
-                doc = doc_dict[doc_name]
-                
-                for prompt_name, result_data in prompt_results.items():
-                    prompt = prompt_dict[prompt_name]
-                    
+            for doc in batch_run.documents:
+                for prompt in batch_run.prompts:
                     result = Result(
                         document=doc,
                         prompt=prompt,
                         batch_run=batch_run,
-                        response=result_data['response'],
-                        created_at=batch_data['completed_at'] or datetime.utcnow()
+                        response=f"Sample result for {doc.name} with prompt {prompt.name}"
                     )
                     db.add(result)
                     
-                    # Add feedback
-                    for fb_data in result_data.get('feedback', []):
-                        feedback = Feedback(
-                            result=result,
-                            rating=fb_data['rating'],
-                            comment=fb_data['comment'],
-                            created_at=(batch_data['completed_at'] or datetime.utcnow()) + timedelta(hours=1)
-                        )
-                        db.add(feedback)
+                    # Add some sample feedback
+                    feedback = Feedback(
+                        result=result,
+                        rating=4,
+                        comment="Good analysis of the document content"
+                    )
+                    db.add(feedback)
+        
+        elif batch_data['status'] in ['pending_approval', 'approved']:
+            # For pending and approved runs, just add the documents and prompts
+            for doc in list(doc_dict.values())[:2]:  # Add first two documents
+                batch_run.documents.append(doc)
+            for prompt in list(prompt_dict.values())[:2]:  # Add first two prompts
+                batch_run.prompts.append(prompt)
     
     db.commit()
     db.close()

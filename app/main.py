@@ -10,7 +10,6 @@ from sample_data import initialize_sample_data
 
 SessionLocal = init_db()
 
-# Initialize sample data if needed
 try:
     db = SessionLocal()
     if db.query(Prompt).count() == 0:
@@ -25,27 +24,133 @@ def get_db():
     finally:
         db.close()
 
-# Utility functions
 def format_datetime(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
-# UI Components
-class DocumentViewer:
+class SharedState:
+    """Shared state between components"""
     def __init__(self):
         self.selected_documents = set()
+        self.selected_document_details = {}  # Store document details for display
+        self.on_selection_change_callbacks = []
+        self.on_clear_selection_callbacks = []  # New list for clear selection callbacks
+
+    def update_selection(self, doc_id: int, doc_details: dict, selected: bool):
+        if selected:
+            self.selected_documents.add(doc_id)
+            self.selected_document_details[doc_id] = doc_details
+        else:
+            self.selected_documents.discard(doc_id)
+            self.selected_document_details.pop(doc_id, None)
+        
+        # Notify all listeners
+        for callback in self.on_selection_change_callbacks:
+            callback()
+
+    def get_selected_count(self) -> int:
+        return len(self.selected_documents)
+
+    def get_selected_names(self) -> str:
+        return ", ".join(self.selected_document_details[doc_id]["name"] 
+                        for doc_id in self.selected_documents)
+
+    def clear_selection(self):
+        self.selected_documents.clear()
+        self.selected_document_details.clear()
+        for callback in self.on_selection_change_callbacks:
+            callback()
+
+# Create a global shared state
+shared_state = SharedState()
+
+class SelectionHeader:
+    def __init__(self):
+        with ui.row().classes('w-full items-center bg-blue-100 p-4'):
+            self.selection_label = ui.label('No documents selected').classes('flex-grow')
+            ui.button('Clear Selection', on_click=self.clear_selection).props('flat')
+        
+        # Register for selection updates
+        shared_state.on_selection_change_callbacks.append(self.update_header)
+        
+    def update_header(self):
+        count = shared_state.get_selected_count()
+        if count > 0:
+            names = shared_state.get_selected_names()
+            self.selection_label.text = f'{count} documents selected: {names}'
+        else:
+            self.selection_label.text = 'No documents selected'
+    
+    def clear_selection(self):
+        shared_state.clear_selection()
+        # Notify all document viewers to clear their table selection
+        for callback in shared_state.on_clear_selection_callbacks:
+            callback()
+
+class DocumentViewer:
+    def __init__(self):
+        self.selected_documents = shared_state.selected_documents  # Use shared state
         
         with ui.card().classes('w-full'):
             ui.label('Available Documents').classes('text-h6')
             
-            # Search and Set Management
-            with ui.row().classes('w-full items-center justify-between'):
-                with ui.column().classes('w-1/2'):
-                    self.search_input = ui.input(label='Search Documents').classes('w-full')
-                    self.search_input.on('change', self.update_documents)
+            # Preview dialog - Initialize first
+            self.preview_dialog = ui.dialog()
+            with self.preview_dialog:
+                with ui.card().classes('p-4'):
+                    self.preview_title = ui.label().classes('text-h6 mb-4')
+                    self.preview_content = ui.textarea(
+                        label='Content',
+                        value=''
+                    ).props('disable').classes('w-full min-w-[600px] min-h-[400px]')
+                    with ui.row().classes('w-full justify-end mt-4'):
+                        ui.button('Close', on_click=lambda: self.preview_dialog.close()).props('flat')
+            
+            # Search and filter section
+            with ui.row().classes('w-full items-end justify-between'):
+                with ui.column().classes('w-full'):
+                    with ui.row().classes('w-full items-end'):
+                        with ui.column().classes('w-1/4 pr-2'):
+                            self.search_input = ui.input(label='Search').classes('w-full')
+                            self.search_input.on('change', self.update_documents)
+                        
+                        with ui.column().classes('w-1/4 pr-2'):
+                            self.search_column = ui.select(
+                                options=[
+                                    {'label': 'All Columns', 'value': 'all'},
+                                    {'label': 'Document Name', 'value': 'name'},
+                                    {'label': 'File Type', 'value': 'file_type'},
+                                    {'label': 'Sets', 'value': 'sets'}
+                                ],
+                                label='Search In'
+                            ).classes('w-full')
+                            self.search_column.value = 'all'
+                            self.search_column.on('change', self.update_documents)
+                        
+                        with ui.column().classes('w-1/4 pr-2'):
+                            type_options = [{'label': 'All Types', 'value': 'all'}]
+                            self.type_filter = ui.select(
+                                options=type_options,
+                                label='File Type'
+                            ).classes('w-full')
+                            self.type_filter.value = 'all'
+                            self.type_filter.on('change', self.update_documents)
+                        
+                        with ui.column().classes('w-1/4'):
+                            set_options = [{'label': 'All Sets', 'value': 'all'}]
+                            self.set_filter = ui.select(
+                                options=set_options,
+                                label='Set'
+                            ).classes('w-full')
+                            self.set_filter.value = 'all'
+                            self.set_filter.on('change', self.update_documents)
                 
-                with ui.column().classes('w-1/2 flex justify-end'):
-                    ui.button('Create New Set', on_click=self.show_create_set_dialog).props('color=primary')
-                    ui.button('Manage Sets', on_click=self.show_manage_sets_dialog).props('color=secondary')
+                with ui.column().classes('ml-4'):
+                    with ui.row():
+                        ui.button('Create New Set', on_click=self.show_create_set_dialog).props('color=primary')
+                        ui.button('Manage Sets', on_click=self.show_manage_sets_dialog).props('color=secondary')
+            
+            # Initialize filter options
+            self.update_filter_options()
             
             # Documents table
             with ui.table(
@@ -61,48 +166,22 @@ class DocumentViewer:
                 row_key='id',
                 selection='multiple'
             ).classes('w-full') as self.documents_table:
-                # Preview button template
                 actions_template = '''
                     <q-td key="actions" :props="props">
                         <q-btn flat color="primary" label="Preview" @click="$emit('preview', props.row)" />
                     </q-td>
                 '''
                 self.documents_table.add_slot('body-cell-actions', actions_template)
-                self.documents_table.on('preview', lambda e: self.show_preview(e.args))
+                self.documents_table.on('preview', self.handle_preview)
                 self.documents_table.on('selection', self.handle_selection)
+                
+                # Register for clear selection events
+                shared_state.on_clear_selection_callbacks.append(self.clear_table_selection)
             
-            # Selected documents actions
             with ui.row().classes('w-full mt-4'):
                 self.selection_label = ui.label('0 documents selected')
                 ui.button('Add to Set', on_click=self.show_add_to_set_dialog).props('color=primary')
             
-            # Document preview dialog
-            self.preview_dialog = ui.dialog()
-            with self.preview_dialog:
-                with ui.card().classes('p-4'):
-                    self.preview_title = ui.label().classes('text-h6')
-                    self.preview_content = ui.textarea(label='Content', value='').props('disable').classes('w-full min-w-[500px] min-h-[300px]')
-                    
-                    # Add prompt selection and submission
-                    ui.label('Select Prompt').classes('text-h6 mt-4')
-                    self.preview_prompt_select = ui.select(
-                        options=self.get_prompts_options(),
-                        label='Choose a prompt'
-                    ).classes('w-full')
-                    
-                    # Result area
-                    self.preview_result = ui.textarea(
-                        label='Result',
-                        value='',
-                        placeholder='Result will appear here...'
-                    ).props('disable').classes('w-full min-h-[200px] mt-4')
-                    
-                    # Submit button
-                    with ui.row().classes('w-full justify-end mt-4'):
-                        ui.button('Close', on_click=lambda: self.preview_dialog.close()).props('flat')
-                        ui.button('Submit', on_click=self.handle_preview_submit).props('color=primary')
-            
-            # Create Set Dialog
             self.create_set_dialog = ui.dialog()
             with self.create_set_dialog:
                 with ui.card().classes('p-4'):
@@ -110,7 +189,6 @@ class DocumentViewer:
                     self.new_set_name = ui.input('Set Name').classes('w-full')
                     self.new_set_description = ui.textarea('Description').classes('w-full')
                     
-                    # Query Builder
                     ui.label('Add Query (Optional)').classes('mt-4')
                     with ui.row().classes('w-full items-end'):
                         query_type_options = [
@@ -133,7 +211,6 @@ class DocumentViewer:
                         ui.button('Cancel', on_click=lambda: self.create_set_dialog.close()).props('flat')
                         ui.button('Create', on_click=self.create_set).props('color=primary')
             
-            # Add to Set Dialog
             self.add_to_set_dialog = ui.dialog()
             with self.add_to_set_dialog:
                 with ui.card().classes('p-4'):
@@ -143,14 +220,12 @@ class DocumentViewer:
                         label='Select Sets',
                         multiple=True
                     ).classes('w-full')
-                    # Add a summary label to show selected sets
                     self.set_selection_summary = ui.label('No sets selected').classes('text-sm text-gray-600 mt-1')
                     self.set_selector.on('update:model-value', self.update_set_selection_summary)
                     with ui.row().classes('w-full justify-end mt-4'):
                         ui.button('Cancel', on_click=lambda: self.add_to_set_dialog.close()).props('flat')
                         ui.button('Add', on_click=self.add_to_set).props('color=primary')
             
-            # Manage Sets Dialog
             self.manage_sets_dialog = ui.dialog()
             with self.manage_sets_dialog:
                 with ui.card().classes('p-4 min-w-[600px]'):
@@ -166,7 +241,6 @@ class DocumentViewer:
                         pagination=5,
                     ).classes('w-full')
                     
-                    # Add slot for actions column
                     actions_template = '''
                         <q-td key="actions" :props="props">
                             <q-btn flat color="primary" label="View" @click="$emit('view', props.row)" />
@@ -175,55 +249,100 @@ class DocumentViewer:
                     self.sets_table.add_slot('body-cell-actions', actions_template)
                     self.sets_table.on('view', lambda e: self.view_set(e.args['id']))
 
-    def handle_selection(self, e):
+    def update_filter_options(self):
+        """Update the options in the filter dropdowns"""
         try:
-            # Extract information from the event
-            if isinstance(e.args, dict):
-                rows = e.args.get('rows', [])
-                added = e.args.get('added', False)
-                
-                # Update selected documents based on whether rows are being added or removed
-                for row in rows:
-                    if isinstance(row, dict) and 'id' in row:
-                        if added:
-                            self.selected_documents.add(row['id'])
-                        else:
-                            self.selected_documents.discard(row['id'])
-                
-                self.selection_label.text = f'{len(self.selected_documents)} documents selected'
+            db = get_db()
+            
+            # Get unique file types
+            file_types = db.query(Document.file_type).distinct().all()
+            type_options = [{'label': 'All Types', 'value': 'all'}]
+            type_options.extend([
+                {'label': ft[0], 'value': ft[0]} for ft in file_types if ft[0]
+            ])
+            self.type_filter.options = type_options
+            
+            # Get unique sets
+            sets = db.query(DocumentSet.name).distinct().all()
+            set_options = [{'label': 'All Sets', 'value': 'all'}]
+            set_options.extend([
+                {'label': s[0], 'value': s[0]} for s in sets if s[0]
+            ])
+            self.set_filter.options = set_options
+            
+            # Reset values to 'all' after updating options
+            self.type_filter.value = 'all'
+            self.set_filter.value = 'all'
+            
         except Exception as ex:
-            ui.notify(f'Error in handle_selection: {str(ex)}', type='negative')
+            ui.notify(f'Error updating filter options: {str(ex)}', type='negative')
 
     def get_documents(self, search_term: str = '') -> list:
         try:
             db = get_db()
             query = db.query(Document)
             
+            # Apply search filter
             if search_term:
-                query = query.filter(Document.name.ilike(f'%{search_term}%'))
+                if self.search_column.value == 'all':
+                    query = query.filter(
+                        Document.name.ilike(f'%{search_term}%') |
+                        Document.file_type.ilike(f'%{search_term}%')
+                    )
+                elif self.search_column.value == 'name':
+                    query = query.filter(Document.name.ilike(f'%{search_term}%'))
+                elif self.search_column.value == 'file_type':
+                    query = query.filter(Document.file_type.ilike(f'%{search_term}%'))
+            
+            # Apply file type filter
+            if self.type_filter.value and self.type_filter.value != 'all':
+                query = query.filter(Document.file_type == self.type_filter.value)
+            
+            # Apply set filter
+            if self.set_filter.value and self.set_filter.value != 'all':
+                query = query.join(Document.sets).filter(DocumentSet.name == self.set_filter.value)
             
             documents = query.all()
-            return [{
-                'id': doc.id,
-                'name': doc.name,
-                'file_type': doc.file_type,
-                'uploaded_at': format_datetime(doc.uploaded_at),
-                'content': doc.content,
-                'sets': ', '.join(s.name for s in doc.sets)
-            } for doc in documents]
+            
+            result = []
+            for doc in documents:
+                doc_data = {
+                    'id': doc.id,
+                    'name': doc.name,
+                    'file_type': doc.file_type,
+                    'uploaded_at': format_datetime(doc.uploaded_at),
+                    'content': doc.content,
+                    'sets': ', '.join(s.name for s in doc.sets)
+                }
+                result.append(doc_data)
+            return result
         except Exception as ex:
             ui.notify(f'Error getting documents: {str(ex)}', type='negative')
             return []
 
-    def show_preview(self, row):
-        self.preview_title.text = f'Preview: {row["name"]}'
-        content = row['content']
-        self.preview_content.value = content[:1000] + ('...' if len(content) > 1000 else '')
-        # Reset the result area
-        self.preview_result.value = ''
-        # Refresh prompt options
-        self.preview_prompt_select.options = self.get_prompts_options()
-        self.preview_dialog.open()
+    def handle_preview(self, e):
+        """Handle preview button click"""
+        try:
+            ui.notify('Preview clicked')  # Debug notification
+            print("Preview event:", e)  # Debug print
+            print("Preview event args:", e.args)  # Debug print
+            
+            if hasattr(e, 'args'):
+                row_data = e.args
+                print("Row data:", row_data)  # Debug print
+                
+                if isinstance(row_data, dict):
+                    print("Opening preview for:", row_data.get('name'))  # Debug print
+                    self.preview_title.text = f'Preview: {row_data.get("name", "")}'
+                    self.preview_content.value = row_data.get('content', '')
+                    self.preview_dialog.open()
+                else:
+                    ui.notify('Invalid document data format', type='warning')
+            else:
+                ui.notify('No event data received', type='warning')
+        except Exception as ex:
+            print("Error in handle_preview:", ex)  # Debug print
+            ui.notify(f'Error showing preview: {str(ex)}', type='negative')
 
     def update_documents(self):
         try:
@@ -261,7 +380,7 @@ class DocumentViewer:
             'name': s.name,
             'description': s.description,
             'doc_count': len(s.documents),
-            'actions': None  # This field is needed but will be rendered by the slot
+            'actions': None  
         } for s in sets]
 
     def create_set(self):
@@ -275,12 +394,10 @@ class DocumentViewer:
             description=self.new_set_description.value
         )
         
-        # Add selected documents if any
         if self.selected_documents:
             documents = db.query(Document).filter(Document.id.in_(self.selected_documents)).all()
             new_set.documents.extend(documents)
         
-        # Add query if specified
         if all([self.query_type.value, self.query_operator.value, self.query_value.value]):
             query = DocumentQuery(
                 name=f"Auto-query for {self.new_set_name.value}",
@@ -295,8 +412,7 @@ class DocumentViewer:
         
         ui.notify('Set created successfully')
         self.create_set_dialog.close()
-        self.update_documents()  # Refresh the documents table
-
+        self.update_documents()  
     def update_set_selection_summary(self, e):
         """Update the summary of selected sets"""
         if not e.value:
@@ -316,7 +432,6 @@ class DocumentViewer:
         db = get_db()
         documents = db.query(Document).filter(Document.id.in_(self.selected_documents)).all()
         
-        # Add documents to each selected set
         for set_id in self.set_selector.value:
             doc_set = db.query(DocumentSet).get(set_id)
             if doc_set:
@@ -328,13 +443,12 @@ class DocumentViewer:
         
         ui.notify('Documents added to selected sets successfully')
         self.add_to_set_dialog.close()
-        self.update_documents()  # Refresh the documents table
+        self.update_documents()  
 
     def view_set(self, set_id):
         db = get_db()
         doc_set = db.query(DocumentSet).get(set_id)
         
-        # Clear current selection and select only documents from this set
         self.selected_documents.clear()
         self.selected_documents.update(d.id for d in doc_set.documents)
         
@@ -361,8 +475,6 @@ class DocumentViewer:
                 ui.notify('Selected prompt not found', type='negative')
                 return
             
-            # Here you would typically call your LLM or processing logic
-            # For now, we'll just combine the prompt and content as an example
             result = f"Prompt: {prompt.content}\n\nDocument Content: {self.preview_content.value}\n\nResult: This is a placeholder result. Implement your actual processing logic here."
             
             self.preview_result.value = result
@@ -371,22 +483,65 @@ class DocumentViewer:
         except Exception as ex:
             ui.notify(f'Error processing preview: {str(ex)}', type='negative')
 
+    def clear_table_selection(self):
+        """Clear the table selection"""
+        self.documents_table.selected = []  # Clear the table's selection
+
+    def handle_selection(self, e):
+        """Handle selection events from the documents table"""
+        try:
+            if isinstance(e.args, dict):
+                rows = e.args.get('rows', [])
+                added = e.args.get('added', False)
+                
+                for row in rows:
+                    if isinstance(row, dict) and 'id' in row:
+                        doc_id = row['id']
+                        if added:
+                            shared_state.update_selection(doc_id, row, True)
+                        else:
+                            shared_state.update_selection(doc_id, row, False)
+        except Exception as ex:
+            ui.notify(f'Error in handle_selection: {str(ex)}', type='negative')
+
 class PromptManager:
     def __init__(self):
         self.selected_prompts = set()
+        self.current_results = []
         
         with ui.card().classes('w-full'):
             ui.label('Manage Prompts').classes('text-h6')
             
-            # Search and Set Management
-            with ui.row().classes('w-full items-center justify-between'):
-                with ui.column().classes('w-1/2'):
-                    self.search_input = ui.input(label='Search Prompts').classes('w-full')
+            # Search and filter section
+            with ui.row().classes('w-full items-end mb-4'):
+                with ui.column().classes('w-1/3 pr-2'):
+                    self.search_input = ui.input(label='Search').classes('w-full')
                     self.search_input.on('change', self.update_prompts)
                 
-                with ui.column().classes('w-1/2 flex justify-end'):
-                    ui.button('Create New Set', on_click=self.show_create_set_dialog).props('color=primary')
-                    ui.button('Manage Sets', on_click=self.show_manage_sets_dialog).props('color=secondary')
+                with ui.column().classes('w-1/3 pr-2'):
+                    self.search_column = ui.select(
+                        options=[
+                            {'label': 'All Columns', 'value': 'all'},
+                            {'label': 'Name', 'value': 'name'},
+                            {'label': 'Content', 'value': 'content'}
+                        ],
+                        label='Search In'
+                    ).classes('w-full')
+                    self.search_column.value = 'all'
+                    self.search_column.on('change', self.update_prompts)
+                
+                with ui.column().classes('w-1/3'):
+                    self.date_filter = ui.select(
+                        options=[
+                            {'label': 'All Time', 'value': 'all'},
+                            {'label': 'Last 24 Hours', 'value': '24h'},
+                            {'label': 'Last 7 Days', 'value': '7d'},
+                            {'label': 'Last 30 Days', 'value': '30d'}
+                        ],
+                        label='Created'
+                    ).classes('w-full')
+                    self.date_filter.value = 'all'
+                    self.date_filter.on('change', self.update_prompts)
             
             # Create prompt form
             with ui.row().classes('w-full mt-4'):
@@ -394,13 +549,24 @@ class PromptManager:
                 self.prompt_content = ui.textarea(label='Prompt Content').classes('w-2/3')
                 ui.button('Save Prompt', on_click=self.save_prompt).props('color=primary')
             
+            # Run section
+            with ui.row().classes('w-full mt-4 items-center'):
+                self.selected_docs_label = ui.label().classes('mr-4')
+                with ui.row().classes('gap-2'):
+                    ui.button('Run Selected Prompts', on_click=self.run_prompts).props('color=primary')
+                    ui.button('Request Batch Run', on_click=self.show_batch_request_dialog).props('color=secondary')
+                
+                # Register for selection updates
+                shared_state.on_selection_change_callbacks.append(self.update_selection_label)
+                # Initial update
+                self.update_selection_label()
+            
             # Prompts table
             with ui.table(
                 columns=[
                     {'name': 'name', 'label': 'Name', 'field': 'name', 'sortable': True},
                     {'name': 'content', 'label': 'Content', 'field': 'content'},
                     {'name': 'created', 'label': 'Created', 'field': 'created_at', 'sortable': True},
-                    {'name': 'sets', 'label': 'Sets', 'field': 'sets'},
                     {'name': 'actions', 'label': 'Actions', 'field': 'actions'},
                 ],
                 rows=self.get_prompts(),
@@ -408,99 +574,245 @@ class PromptManager:
                 row_key='id',
                 selection='multiple'
             ).classes('w-full') as self.prompts_table:
-                # Preview button template
                 actions_template = '''
                     <q-td key="actions" :props="props">
-                        <q-btn flat color="primary" label="Preview" @click="$emit('preview', props.row)" />
+                        <q-btn flat color="secondary" label="Edit" @click="$emit('edit', props.row)" />
                     </q-td>
                 '''
                 self.prompts_table.add_slot('body-cell-actions', actions_template)
-                self.prompts_table.on('preview', lambda e: self.show_preview(e.args))
+                self.prompts_table.on('edit', self.show_edit_dialog)
                 self.prompts_table.on('selection', self.handle_selection)
             
-            # Selected prompts actions
-            with ui.row().classes('w-full mt-4'):
-                self.selection_label = ui.label('0 prompts selected')
-                ui.button('Add to Set', on_click=self.show_add_to_set_dialog).props('color=primary')
-            
-            # Prompt preview dialog
-            self.preview_dialog = ui.dialog()
-            with self.preview_dialog:
+            # Results container
+            self.results_container = ui.column().classes('w-full mt-4')
+
+            # Save dialog
+            self.save_dialog = ui.dialog()
+            with self.save_dialog:
                 with ui.card().classes('p-4'):
-                    self.preview_title = ui.label().classes('text-h6')
-                    self.preview_content = ui.textarea(label='Content', value='').props('disable').classes('w-full min-w-[500px] min-h-[300px]')
-            
-            # Create Set Dialog
-            self.create_set_dialog = ui.dialog()
-            with self.create_set_dialog:
+                    ui.label('Save Results').classes('text-h6 mb-4')
+                    self.save_run_name = ui.input(label='Run Name').classes('w-full mb-4')
+                    with ui.row().classes('w-full justify-end'):
+                        ui.button('Cancel', on_click=lambda: self.save_dialog.close()).props('flat')
+                        ui.button('Save', on_click=self.save_results).props('color=primary')
+
+            # Edit dialog
+            self.edit_dialog = ui.dialog()
+            with self.edit_dialog:
                 with ui.card().classes('p-4'):
-                    ui.label('Create New Prompt Set').classes('text-h6 mb-4')
-                    self.new_set_name = ui.input('Set Name').classes('w-full')
-                    self.new_set_description = ui.textarea('Description').classes('w-full')
-                    
-                    # Query Builder
-                    ui.label('Add Query (Optional)').classes('mt-4')
-                    with ui.row().classes('w-full items-end'):
-                        query_type_options = [
-                            {'label': 'Prompt Name', 'value': 'name'},
-                            {'label': 'Content', 'value': 'content'}
-                        ]
-                        self.query_type = ui.select(options=query_type_options, label='Query Type').classes('w-1/3')
-                        
-                        operator_options = [
-                            {'label': 'Contains', 'value': 'contains'},
-                            {'label': 'Equals', 'value': 'equals'},
-                            {'label': 'Starts With', 'value': 'startswith'},
-                            {'label': 'Ends With', 'value': 'endswith'}
-                        ]
-                        self.query_operator = ui.select(options=operator_options, label='Operator').classes('w-1/3')
-                        self.query_value = ui.input('Value').classes('w-1/3')
-                    
-                    with ui.row().classes('w-full justify-end mt-4'):
-                        ui.button('Cancel', on_click=lambda: self.create_set_dialog.close()).props('flat')
-                        ui.button('Create', on_click=self.create_set).props('color=primary')
-            
-            # Add to Set Dialog
-            self.add_to_set_dialog = ui.dialog()
-            with self.add_to_set_dialog:
-                with ui.card().classes('p-4'):
-                    ui.label('Add to Set').classes('text-h6 mb-4')
-                    self.set_selector = ui.select(
-                        options=self.get_sets_options(), 
-                        label='Select Sets',
-                        multiple=True
-                    ).classes('w-full')
-                    # Add a summary label to show selected sets
-                    self.set_selection_summary = ui.label('No sets selected').classes('text-sm text-gray-600 mt-1')
-                    self.set_selector.on('update:model-value', self.update_set_selection_summary)
-                    with ui.row().classes('w-full justify-end mt-4'):
-                        ui.button('Cancel', on_click=lambda: self.add_to_set_dialog.close()).props('flat')
-                        ui.button('Add', on_click=self.add_to_set).props('color=primary')
-            
-            # Manage Sets Dialog
-            self.manage_sets_dialog = ui.dialog()
-            with self.manage_sets_dialog:
+                    ui.label('Edit Prompt').classes('text-h6 mb-4')
+                    self.edit_prompt_id = None
+                    self.edit_name = ui.input(label='Prompt Name').classes('w-full mb-4')
+                    self.edit_content = ui.textarea(label='Prompt Content').classes('w-full min-h-[300px] mb-4')
+                    with ui.row().classes('w-full justify-end'):
+                        ui.button('Cancel', on_click=lambda: self.edit_dialog.close()).props('flat')
+                        ui.button('Save Changes', on_click=self.save_edit).props('color=primary')
+
+            # Batch Request Dialog
+            self.batch_request_dialog = ui.dialog()
+            with self.batch_request_dialog:
                 with ui.card().classes('p-4 min-w-[600px]'):
-                    ui.label('Manage Prompt Sets').classes('text-h6 mb-4')
-                    self.sets_table = ui.table(
-                        columns=[
-                            {'name': 'name', 'label': 'Set Name', 'field': 'name'},
-                            {'name': 'description', 'label': 'Description', 'field': 'description'},
-                            {'name': 'prompt_count', 'label': 'Prompts', 'field': 'prompt_count'},
-                            {'name': 'actions', 'label': 'Actions', 'field': 'actions'},
-                        ],
-                        rows=self.get_sets(),
-                        pagination=5,
-                    ).classes('w-full')
+                    ui.label('Request Batch Run').classes('text-h6 mb-4')
                     
-                    # Add slot for actions column
-                    actions_template = '''
-                        <q-td key="actions" :props="props">
-                            <q-btn flat color="primary" label="View" @click="$emit('view', props.row)" />
-                        </q-td>
-                    '''
-                    self.sets_table.add_slot('body-cell-actions', actions_template)
-                    self.sets_table.on('view', lambda e: self.view_set(e.args['id']))
+                    self.batch_name = ui.input(label='Batch Run Name').classes('w-full mb-4')
+                    self.batch_description = ui.textarea(label='Description/Purpose').classes('w-full mb-4')
+                    
+                    ui.label('Select Document Sets').classes('text-subtitle1 mb-2')
+                    self.doc_set_selection = ui.select(
+                        label='Document Sets',
+                        options=self.get_document_sets(),
+                        multiple=True
+                    ).classes('w-full mb-4')
+                    self.doc_summary = ui.label('No sets selected').classes('text-sm text-gray-600 mb-4')
+                    self.doc_set_selection.on('update:model-value', self.update_doc_summary)
+                    
+                    ui.label('Select Prompts').classes('text-subtitle1 mb-2')
+                    self.prompt_selection = ui.select(
+                        label='Prompts',
+                        options=self.get_prompts_options(),
+                        multiple=True
+                    ).classes('w-full mb-4')
+                    self.prompt_summary = ui.label('No prompts selected').classes('text-sm text-gray-600 mb-4')
+                    self.prompt_selection.on('update:model-value', self.update_prompt_summary)
+                    
+                    with ui.row().classes('w-full justify-end'):
+                        ui.button('Cancel', on_click=lambda: self.batch_request_dialog.close()).props('flat')
+                        ui.button('Submit Request', on_click=self.submit_batch_request).props('color=primary')
+
+    def get_document_sets(self):
+        """Get available document sets for selection"""
+        db = get_db()
+        sets = db.query(DocumentSet).all()
+        return [{'label': f"{s.name} ({len(s.documents)} documents)", 'value': s.id} for s in sets]
+
+    def get_prompts_options(self):
+        """Get available prompts for selection"""
+        db = get_db()
+        prompts = db.query(Prompt).all()
+        return [{'label': p.name, 'value': p.id} for p in prompts]
+
+    def update_doc_summary(self, e):
+        """Update document sets selection summary"""
+        if not e.value:
+            self.doc_summary.text = 'No sets selected'
+            return
+        
+        db = get_db()
+        selected_sets = db.query(DocumentSet).filter(DocumentSet.id.in_(e.value)).all()
+        total_docs = sum(len(s.documents) for s in selected_sets)
+        set_names = ', '.join(s.name for s in selected_sets)
+        self.doc_summary.text = f"Selected {total_docs} documents from sets: {set_names}"
+
+    def update_prompt_summary(self, e):
+        """Update prompts selection summary"""
+        if not e.value:
+            self.prompt_summary.text = 'No prompts selected'
+            return
+        
+        db = get_db()
+        selected_prompts = db.query(Prompt).filter(Prompt.id.in_(e.value)).all()
+        prompt_names = ', '.join(p.name for p in selected_prompts)
+        self.prompt_summary.text = f"Selected prompts: {prompt_names}"
+
+    def show_batch_request_dialog(self):
+        """Show the batch request dialog"""
+        self.doc_set_selection.options = self.get_document_sets()
+        self.prompt_selection.options = self.get_prompts_options()
+        self.batch_request_dialog.open()
+
+    def submit_batch_request(self):
+        """Submit a new batch run request"""
+        if not self.batch_name.value:
+            ui.notify('Please enter a batch run name', type='warning')
+            return
+        
+        if not self.doc_set_selection.value or not self.prompt_selection.value:
+            ui.notify('Please select both document sets and prompts', type='warning')
+            return
+        
+        try:
+            db = get_db()
+            
+            batch_run = BatchRun(
+                name=self.batch_name.value,
+                description=self.batch_description.value,
+                status='pending_approval',
+                scheduled_for=None  # Will be set by admin during approval
+            )
+            db.add(batch_run)
+            
+            # Add documents from selected sets
+            doc_sets = db.query(DocumentSet).filter(DocumentSet.id.in_(self.doc_set_selection.value)).all()
+            for doc_set in doc_sets:
+                batch_run.documents.extend(doc_set.documents)
+            
+            # Add selected prompts
+            prompts = db.query(Prompt).filter(Prompt.id.in_(self.prompt_selection.value)).all()
+            batch_run.prompts.extend(prompts)
+            
+            db.commit()
+            ui.notify('Batch run request submitted successfully!')
+            
+            self.batch_request_dialog.close()
+            self.batch_name.value = ''
+            self.batch_description.value = ''
+            self.doc_set_selection.value = []
+            self.prompt_selection.value = []
+            
+        except Exception as ex:
+            ui.notify(f'Error submitting batch run request: {str(ex)}', type='negative')
+
+    def run_prompts(self):
+        if not shared_state.get_selected_count():
+            ui.notify('Please select at least one document', type='warning')
+            return
+        
+        if not self.selected_prompts:
+            ui.notify('Please select at least one prompt', type='warning')
+            return
+        
+        try:
+            # Clear previous results
+            self.results_container.clear()
+            self.current_results = []  # Clear stored results
+            
+            db = get_db()
+            prompts = db.query(Prompt).filter(Prompt.id.in_(self.selected_prompts)).all()
+            
+            # Add save all button at the top
+            with ui.row().classes('w-full justify-end mb-4'):
+                ui.button('Save All Results', on_click=lambda: self.show_save_dialog()).props('color=primary')
+            
+            # Create an expansion item for each document
+            for doc_id in shared_state.selected_documents:
+                doc_details = shared_state.selected_document_details[doc_id]
+                
+                with ui.expansion(f"Document: {doc_details['name']}", icon='description').classes('w-full') as expansion:
+                    for prompt in prompts:
+                        # For now, use placeholder text
+                        result_text = f"Processed document '{doc_details['name']}' with prompt '{prompt.name}'\n"
+                        result_text += "This is a placeholder result. In a real implementation, this would be the output of your processing logic."
+                        
+                        # Store result for later saving
+                        result_data = {
+                            'document_id': doc_id,
+                            'document_name': doc_details['name'],
+                            'prompt_id': prompt.id,
+                            'prompt_name': prompt.name,
+                            'result': result_text
+                        }
+                        self.current_results.append(result_data)
+                        
+                        with ui.card().classes('w-full q-mb-md'):
+                            with ui.row().classes('w-full items-center justify-between'):
+                                ui.label(f"Prompt: {prompt.name}").classes('text-subtitle1')
+                                ui.button('Save', on_click=lambda r=result_data: self.show_save_dialog([r])).props('flat color=primary')
+                            ui.textarea(value=result_text).props('readonly').classes('w-full')
+            
+            ui.notify('Processing complete!', type='positive')
+            
+        except Exception as ex:
+            ui.notify(f'Error running prompts: {str(ex)}', type='negative')
+
+    def show_save_dialog(self, results=None):
+        """Show save dialog for specified results or all results if none specified"""
+        self.results_to_save = results or self.current_results
+        self.save_run_name.value = ''
+        self.save_dialog.open()
+
+    def save_results(self):
+        """Save the selected results to the database"""
+        if not self.save_run_name.value:
+            ui.notify('Please enter a run name', type='warning')
+            return
+        
+        try:
+            db = get_db()
+            
+            # Create a new batch run
+            batch_run = BatchRun(
+                name=self.save_run_name.value,
+                status='completed',
+                completed_at=datetime.utcnow()
+            )
+            db.add(batch_run)
+            
+            # Add results
+            for result_data in self.results_to_save:
+                result = Result(
+                    document_id=result_data['document_id'],
+                    prompt_id=result_data['prompt_id'],
+                    batch_run=batch_run,
+                    response=result_data['result']
+                )
+                db.add(result)
+            
+            db.commit()
+            ui.notify('Results saved successfully!', type='positive')
+            self.save_dialog.close()
+            
+        except Exception as ex:
+            ui.notify(f'Error saving results: {str(ex)}', type='negative')
 
     def handle_selection(self, e):
         try:
@@ -514,8 +826,6 @@ class PromptManager:
                             self.selected_prompts.add(row['id'])
                         else:
                             self.selected_prompts.discard(row['id'])
-                
-                self.selection_label.text = f'{len(self.selected_prompts)} prompts selected'
         except Exception as ex:
             ui.notify(f'Error in handle_selection: {str(ex)}', type='negative')
 
@@ -524,8 +834,28 @@ class PromptManager:
             db = get_db()
             query = db.query(Prompt)
             
+            # Apply search filter
             if search_term:
-                query = query.filter(Prompt.name.ilike(f'%{search_term}%'))
+                if self.search_column.value == 'all':
+                    query = query.filter(
+                        Prompt.name.ilike(f'%{search_term}%') |
+                        Prompt.content.ilike(f'%{search_term}%')
+                    )
+                elif self.search_column.value == 'name':
+                    query = query.filter(Prompt.name.ilike(f'%{search_term}%'))
+                elif self.search_column.value == 'content':
+                    query = query.filter(Prompt.content.ilike(f'%{search_term}%'))
+            
+            # Apply date filter
+            if self.date_filter.value and self.date_filter.value != 'all':
+                now = datetime.utcnow()
+                if self.date_filter.value == '24h':
+                    cutoff = now - timedelta(hours=24)
+                elif self.date_filter.value == '7d':
+                    cutoff = now - timedelta(days=7)
+                elif self.date_filter.value == '30d':
+                    cutoff = now - timedelta(days=30)
+                query = query.filter(Prompt.created_at >= cutoff)
             
             prompts = query.all()
             return [{
@@ -533,16 +863,43 @@ class PromptManager:
                 'name': p.name,
                 'content': p.content,
                 'created_at': format_datetime(p.created_at),
-                'sets': ', '.join(s.name for s in p.sets)
             } for p in prompts]
         except Exception as ex:
             ui.notify(f'Error getting prompts: {str(ex)}', type='negative')
             return []
 
-    def show_preview(self, row):
-        self.preview_title.text = f'Preview: {row["name"]}'
-        self.preview_content.value = row['content']
-        self.preview_dialog.open()
+    def show_edit_dialog(self, row_data):
+        """Opens the edit dialog with the prompt data"""
+        try:
+            if isinstance(row_data, dict):
+                self.edit_prompt_id = row_data.get('id')
+                self.edit_name.value = row_data.get('name', '')
+                self.edit_content.value = row_data.get('content', '')
+                self.edit_dialog.open()
+            else:
+                ui.notify('Invalid row data', type='negative')
+        except Exception as ex:
+            ui.notify(f'Error opening edit dialog: {str(ex)}', type='negative')
+
+    def save_edit(self):
+        if not self.edit_name.value or not self.edit_content.value:
+            ui.notify('Please enter both name and content', type='warning')
+            return
+        
+        try:
+            db = get_db()
+            prompt = db.query(Prompt).get(self.edit_prompt_id)
+            if prompt:
+                prompt.name = self.edit_name.value
+                prompt.content = self.edit_content.value
+                db.commit()
+                ui.notify('Prompt updated successfully!', type='positive')
+                self.edit_dialog.close()
+                self.update_prompts()
+            else:
+                ui.notify('Prompt not found', type='negative')
+        except Exception as ex:
+            ui.notify(f'Error updating prompt: {str(ex)}', type='negative')
 
     def update_prompts(self):
         try:
@@ -567,254 +924,106 @@ class PromptManager:
         self.prompt_name.value = ''
         self.prompt_content.value = ''
 
-    def show_create_set_dialog(self):
-        self.create_set_dialog.open()
-
-    def show_add_to_set_dialog(self):
-        try:
-            if not self.selected_prompts:
-                ui.notify('Please select prompts first', type='warning')
-                return
-            self.set_selector.options = self.get_sets_options()
-            self.add_to_set_dialog.open()
-        except Exception as ex:
-            ui.notify(f'Error showing dialog: {str(ex)}', type='negative')
-
-    def show_manage_sets_dialog(self):
-        self.sets_table.rows = self.get_sets()
-        self.manage_sets_dialog.open()
-
-    def get_sets_options(self) -> list:
-        db = get_db()
-        sets = db.query(PromptSet).all()
-        return [{'label': f"{s.name} ({len(s.prompts)} prompts)", 'value': s.id} for s in sets]
-
-    def get_sets(self) -> list:
-        db = get_db()
-        sets = db.query(PromptSet).all()
-        return [{
-            'id': s.id,
-            'name': s.name,
-            'description': s.description,
-            'prompt_count': len(s.prompts),
-            'actions': None  # This field is needed but will be rendered by the slot
-        } for s in sets]
-
-    def create_set(self):
-        if not self.new_set_name.value:
-            ui.notify('Please enter a set name', type='warning')
-            return
-        
-        db = get_db()
-        new_set = PromptSet(
-            name=self.new_set_name.value,
-            description=self.new_set_description.value
-        )
-        
-        # Add selected prompts if any
-        if self.selected_prompts:
-            prompts = db.query(Prompt).filter(Prompt.id.in_(self.selected_prompts)).all()
-            new_set.prompts.extend(prompts)
-        
-        # Add query if specified
-        if all([self.query_type.value, self.query_operator.value, self.query_value.value]):
-            query = PromptQuery(
-                name=f"Auto-query for {self.new_set_name.value}",
-                query_type=self.query_type.value,
-                operator=self.query_operator.value,
-                query_value=self.query_value.value
-            )
-            new_set.queries.append(query)
-        
-        db.add(new_set)
-        db.commit()
-        
-        ui.notify('Set created successfully')
-        self.create_set_dialog.close()
-        self.update_prompts()  # Refresh the prompts table
-
-    def update_set_selection_summary(self, e):
-        """Update the summary of selected sets"""
-        if not e.value:
-            self.set_selection_summary.text = 'No sets selected'
-            return
-        
-        db = get_db()
-        selected_sets = db.query(PromptSet).filter(PromptSet.id.in_(e.value)).all()
-        set_names = ', '.join(s.name for s in selected_sets)
-        self.set_selection_summary.text = f"Selected sets: {set_names}"
-
-    def add_to_set(self):
-        if not self.set_selector.value:
-            ui.notify('Please select at least one set', type='warning')
-            return
-        
-        db = get_db()
-        prompts = db.query(Prompt).filter(Prompt.id.in_(self.selected_prompts)).all()
-        
-        # Add prompts to each selected set
-        for set_id in self.set_selector.value:
-            prompt_set = db.query(PromptSet).get(set_id)
-            if prompt_set:
-                for prompt in prompts:
-                    if prompt not in prompt_set.prompts:
-                        prompt_set.prompts.append(prompt)
-        
-        db.commit()
-        
-        ui.notify('Prompts added to selected sets successfully')
-        self.add_to_set_dialog.close()
-        self.update_prompts()  # Refresh the prompts table
-
-    def view_set(self, set_id):
-        db = get_db()
-        prompt_set = db.query(PromptSet).get(set_id)
-        
-        # Clear current selection and select only prompts from this set
-        self.selected_prompts.clear()
-        self.selected_prompts.update(p.id for p in prompt_set.prompts)
-        
-        self.update_prompts()
-        self.manage_sets_dialog.close()
-        ui.notify(f'Viewing prompts in set: {prompt_set.name}')
+    def update_selection_label(self):
+        """Update the selected documents label"""
+        count = shared_state.get_selected_count()
+        names = shared_state.get_selected_names()
+        if count > 0:
+            self.selected_docs_label.text = f'{count} documents selected: {names}'
+        else:
+            self.selected_docs_label.text = 'No documents selected'
 
 class BatchRunScheduler:
     def __init__(self):
         with ui.card().classes('w-full'):
-            ui.label('Schedule Batch Runs').classes('text-h6')
-            with ui.row():
-                self.run_name = ui.input(label='Batch Run Name')
-                self.schedule_time = ui.input(label='Schedule Time').props('type=datetime-local')
+            ui.label('Review Batch Run Requests').classes('text-h6')
             
-            # Document set selection
-            ui.label('Select Document Sets').classes('text-h6 mt-4')
-            self.doc_set_selection = ui.select(
-                label='Select Document Sets',
-                options=self.get_document_sets(),
-                multiple=True
-            ).classes('w-full')
-            
-            # Selected documents summary
-            self.doc_summary = ui.label('No documents selected').classes('text-sm text-gray-600 mt-1')
-            self.doc_set_selection.on('update:model-value', self.update_doc_summary)
-            
-            # Prompt set selection
-            ui.label('Select Prompt Sets').classes('text-h6 mt-4')
-            self.prompt_set_selection = ui.select(
-                label='Select Prompt Sets',
-                options=self.get_prompt_sets(),
-                multiple=True
-            ).classes('w-full')
-            
-            # Selected prompts summary
-            self.prompt_summary = ui.label('No prompts selected').classes('text-sm text-gray-600 mt-1')
-            self.prompt_set_selection.on('update:model-value', self.update_prompt_summary)
-            
-            ui.button('Schedule Run', on_click=self.schedule_run).props('color=primary')
+            # Filter section
+            with ui.row().classes('w-full items-end mb-4'):
+                self.status_filter = ui.select(
+                    options=[
+                        {'label': 'All Statuses', 'value': 'all'},
+                        {'label': 'Pending Approval', 'value': 'pending_approval'},
+                        {'label': 'Approved', 'value': 'approved'},
+                        {'label': 'Rejected', 'value': 'rejected'},
+                        {'label': 'Running', 'value': 'running'},
+                        {'label': 'Completed', 'value': 'completed'},
+                        {'label': 'Failed', 'value': 'failed'}
+                    ],
+                    label='Status'
+                ).classes('w-1/3')
+                self.status_filter.value = 'pending_approval'
+                self.status_filter.on('change', self.update_runs)
             
             # Batch runs table
             self.runs_table = ui.table(
                 columns=[
                     {'name': 'name', 'label': 'Name', 'field': 'name'},
+                    {'name': 'description', 'label': 'Description', 'field': 'description'},
                     {'name': 'status', 'label': 'Status', 'field': 'status'},
-                    {'name': 'scheduled', 'label': 'Scheduled For', 'field': 'scheduled_for'},
                     {'name': 'doc_sets', 'label': 'Document Sets', 'field': 'doc_sets'},
-                    {'name': 'prompt_sets', 'label': 'Prompt Sets', 'field': 'prompt_sets'},
+                    {'name': 'prompt_sets', 'label': 'Prompts', 'field': 'prompt_sets'},
+                    {'name': 'actions', 'label': 'Actions', 'field': 'actions'},
                 ],
                 rows=self.get_batch_runs()
             ).classes('w-full')
-
-    def get_document_sets(self):
-        db = get_db()
-        sets = db.query(DocumentSet).all()
-        return [{'label': f"{s.name} ({len(s.documents)} documents)", 'value': s.id} for s in sets]
-
-    def get_prompt_sets(self):
-        db = get_db()
-        sets = db.query(PromptSet).all()
-        return [{'label': f"{s.name} ({len(s.prompts)} prompts)", 'value': s.id} for s in sets]
-
-    def update_doc_summary(self, e):
-        if not e.value:
-            self.doc_summary.text = 'No documents selected'
-            return
-        
-        db = get_db()
-        selected_sets = db.query(DocumentSet).filter(DocumentSet.id.in_(e.value)).all()
-        total_docs = sum(len(s.documents) for s in selected_sets)
-        set_names = ', '.join(s.name for s in selected_sets)
-        self.doc_summary.text = f"Selected {total_docs} documents from sets: {set_names}"
-
-    def update_prompt_summary(self, e):
-        if not e.value:
-            self.prompt_summary.text = 'No prompts selected'
-            return
-        
-        db = get_db()
-        selected_sets = db.query(PromptSet).filter(PromptSet.id.in_(e.value)).all()
-        total_prompts = sum(len(s.prompts) for s in selected_sets)
-        set_names = ', '.join(s.name for s in selected_sets)
-        self.prompt_summary.text = f"Selected {total_prompts} prompts from sets: {set_names}"
-
-    def schedule_run(self):
-        if not self.run_name.value:
-            ui.notify('Please enter a batch run name', type='warning')
-            return
-        
-        if not self.schedule_time.value:
-            ui.notify('Please select a schedule time', type='warning')
-            return
-        
-        if not self.doc_set_selection.value or not self.prompt_set_selection.value:
-            ui.notify('Please select both document sets and prompt sets', type='warning')
-            return
-        
-        try:
-            db = get_db()
             
-            # Create batch run
-            batch_run = BatchRun(
-                name=self.run_name.value,
-                scheduled_for=datetime.fromisoformat(self.schedule_time.value)
-            )
-            db.add(batch_run)
+            actions_template = '''
+                <q-td key="actions" :props="props">
+                    <template v-if="props.row.status === 'pending_approval'">
+                        <q-btn flat color="positive" label="Approve" @click="$emit('approve', props.row)" class="q-mr-sm" />
+                        <q-btn flat color="negative" label="Reject" @click="$emit('reject', props.row)" />
+                    </template>
+                    <q-btn flat color="primary" label="View Details" @click="$emit('view', props.row)" />
+                </q-td>
+            '''
+            self.runs_table.add_slot('body-cell-actions', actions_template)
+            self.runs_table.on('approve', self.show_approve_dialog)
+            self.runs_table.on('reject', self.show_reject_dialog)
+            self.runs_table.on('view', self.show_details_dialog)
             
-            # Add documents from selected sets
-            doc_sets = db.query(DocumentSet).filter(DocumentSet.id.in_(self.doc_set_selection.value)).all()
-            for doc_set in doc_sets:
-                batch_run.documents.extend(doc_set.documents)
+            # Approve Dialog
+            self.approve_dialog = ui.dialog()
+            with self.approve_dialog:
+                with ui.card().classes('p-4'):
+                    ui.label('Approve Batch Run').classes('text-h6 mb-4')
+                    self.current_run_id = None
+                    self.schedule_time = ui.input(label='Schedule Time').props('type=datetime-local').classes('w-full mb-4')
+                    with ui.row().classes('w-full justify-end'):
+                        ui.button('Cancel', on_click=lambda: self.approve_dialog.close()).props('flat')
+                        ui.button('Approve', on_click=self.approve_run).props('color=positive')
             
-            # Add prompts from selected sets
-            prompt_sets = db.query(PromptSet).filter(PromptSet.id.in_(self.prompt_set_selection.value)).all()
-            for prompt_set in prompt_sets:
-                batch_run.prompts.extend(prompt_set.prompts)
+            # Reject Dialog
+            self.reject_dialog = ui.dialog()
+            with self.reject_dialog:
+                with ui.card().classes('p-4'):
+                    ui.label('Reject Batch Run').classes('text-h6 mb-4')
+                    self.reject_reason = ui.textarea(label='Reason for Rejection').classes('w-full mb-4')
+                    with ui.row().classes('w-full justify-end'):
+                        ui.button('Cancel', on_click=lambda: self.reject_dialog.close()).props('flat')
+                        ui.button('Reject', on_click=self.reject_run).props('color=negative')
             
-            db.commit()
-            ui.notify('Batch run scheduled successfully!')
-            
-            # Reset form
-            self.run_name.value = ''
-            self.schedule_time.value = ''
-            self.doc_set_selection.value = []
-            self.prompt_set_selection.value = []
-            self.update_doc_summary(None)
-            self.update_prompt_summary(None)
-            
-            # Update table
-            self.runs_table.rows = self.get_batch_runs()
-            
-        except Exception as ex:
-            ui.notify(f'Error scheduling batch run: {str(ex)}', type='negative')
+            # Details Dialog
+            self.details_dialog = ui.dialog()
+            with self.details_dialog:
+                with ui.card().classes('p-4 min-w-[800px]'):
+                    self.details_content = ui.column().classes('w-full')
 
     def get_batch_runs(self):
         db = get_db()
-        runs = db.query(BatchRun).all()
+        query = db.query(BatchRun)
+        
+        if self.status_filter.value != 'all':
+            query = query.filter(BatchRun.status == self.status_filter.value)
+        
+        runs = query.all()
         return [{
+            'id': r.id,
             'name': r.name,
+            'description': r.description,
             'status': r.status,
-            'scheduled_for': format_datetime(r.scheduled_for),
             'doc_sets': self.get_set_names_for_docs(r.documents),
-            'prompt_sets': self.get_set_names_for_prompts(r.prompts)
+            'prompt_sets': self.get_prompt_names(r.prompts)
         } for r in runs]
 
     def get_set_names_for_docs(self, documents):
@@ -824,19 +1033,126 @@ class BatchRunScheduler:
             sets.update(s.name for s in doc.sets)
         return ', '.join(sorted(sets)) if sets else 'No sets'
 
-    def get_set_names_for_prompts(self, prompts):
-        """Get unique set names for a list of prompts"""
-        sets = set()
-        for prompt in prompts:
-            sets.update(s.name for s in prompt.sets)
-        return ', '.join(sorted(sets)) if sets else 'No sets'
+    def get_prompt_names(self, prompts):
+        """Get names of prompts"""
+        return ', '.join(p.name for p in prompts) if prompts else 'No prompts'
+
+    def show_approve_dialog(self, row):
+        """Show the approve dialog for a batch run"""
+        self.current_run_id = row['id']
+        self.schedule_time.value = ''
+        self.approve_dialog.open()
+
+    def show_reject_dialog(self, row):
+        """Show the reject dialog for a batch run"""
+        self.current_run_id = row['id']
+        self.reject_reason.value = ''
+        self.reject_dialog.open()
+
+    def show_details_dialog(self, row):
+        """Show detailed information about a batch run"""
+        try:
+            db = get_db()
+            run = db.query(BatchRun).get(row['id'])
+            
+            self.details_content.clear()
+            with self.details_content:
+                ui.label(f"Batch Run: {run.name}").classes('text-h6 mb-4')
+                
+                if run.description:
+                    ui.label('Description').classes('text-subtitle1')
+                    ui.label(run.description).classes('mb-4')
+                
+                ui.label('Status').classes('text-subtitle1')
+                ui.label(run.status).classes('mb-4')
+                
+                if run.scheduled_for:
+                    ui.label('Scheduled For').classes('text-subtitle1')
+                    ui.label(format_datetime(run.scheduled_for)).classes('mb-4')
+                
+                ui.label('Documents').classes('text-subtitle1')
+                with ui.table(
+                    columns=[
+                        {'name': 'name', 'label': 'Name', 'field': 'name'},
+                        {'name': 'sets', 'label': 'Sets', 'field': 'sets'}
+                    ],
+                    rows=[{
+                        'name': doc.name,
+                        'sets': ', '.join(s.name for s in doc.sets)
+                    } for doc in run.documents]
+                ).classes('w-full mb-4'): pass
+                
+                ui.label('Prompts').classes('text-subtitle1')
+                with ui.table(
+                    columns=[
+                        {'name': 'name', 'label': 'Name', 'field': 'name'},
+                        {'name': 'content', 'label': 'Content', 'field': 'content'}
+                    ],
+                    rows=[{
+                        'name': prompt.name,
+                        'content': prompt.content
+                    } for prompt in run.prompts]
+                ).classes('w-full'): pass
+            
+            self.details_dialog.open()
+        except Exception as ex:
+            ui.notify(f'Error showing details: {str(ex)}', type='negative')
+
+    def approve_run(self):
+        """Approve a batch run request"""
+        if not self.schedule_time.value:
+            ui.notify('Please select a schedule time', type='warning')
+            return
+        
+        try:
+            db = get_db()
+            run = db.query(BatchRun).get(self.current_run_id)
+            
+            if run:
+                run.status = 'approved'
+                run.scheduled_for = datetime.fromisoformat(self.schedule_time.value)
+                db.commit()
+                
+                ui.notify('Batch run approved successfully!')
+                self.approve_dialog.close()
+                self.update_runs()
+            else:
+                ui.notify('Batch run not found', type='negative')
+        except Exception as ex:
+            ui.notify(f'Error approving batch run: {str(ex)}', type='negative')
+
+    def reject_run(self):
+        """Reject a batch run request"""
+        if not self.reject_reason.value:
+            ui.notify('Please provide a reason for rejection', type='warning')
+            return
+        
+        try:
+            db = get_db()
+            run = db.query(BatchRun).get(self.current_run_id)
+            
+            if run:
+                run.status = 'rejected'
+                run.rejection_reason = self.reject_reason.value
+                db.commit()
+                
+                ui.notify('Batch run rejected')
+                self.reject_dialog.close()
+                self.update_runs()
+            else:
+                ui.notify('Batch run not found', type='negative')
+        except Exception as ex:
+            ui.notify(f'Error rejecting batch run: {str(ex)}', type='negative')
+
+    def update_runs(self):
+        """Update the batch runs table"""
+        self.runs_table.rows = self.get_batch_runs()
 
 class ResultsViewer:
     def __init__(self):
         with ui.card().classes('w-full'):
             ui.label('View Results').classes('text-h6')
             
-            # Filters
             with ui.row().classes('w-full items-end'):
                 with ui.column().classes('w-1/4 pr-2'):
                     with ui.row().classes('w-full items-end'):
@@ -876,32 +1192,28 @@ class ResultsViewer:
                             label='Minimum Rating'
                         ).classes('w-full')
                         self.rating_filter.on('update:model-value', self.update_results)
-            
-            # Clear filters button
+
             with ui.row().classes('w-full justify-end mt-2'):
                 ui.button('Clear All Filters', on_click=self.clear_filters).props('flat color=grey-7')
             
-            # Results statistics
             with ui.row().classes('w-full mt-4'):
                 self.stats_label = ui.label('Showing all results').classes('text-sm text-gray-600')
             
-            # Results table
             self.results_table = ui.table(
                 columns=[
+                    {'name': 'actions', 'label': 'Actions', 'field': 'actions'},
                     {'name': 'batch_run', 'label': 'Batch Run', 'field': 'batch_run'},
                     {'name': 'document', 'label': 'Document', 'field': 'document'},
                     {'name': 'prompt', 'label': 'Prompt', 'field': 'prompt'},
                     {'name': 'response', 'label': 'Response', 'field': 'response'},
                     {'name': 'created', 'label': 'Created', 'field': 'created_at'},
-                    {'name': 'feedback', 'label': 'Feedback', 'field': 'feedback'},
-                    {'name': 'actions', 'label': 'Actions', 'field': 'actions'},
+                    {'name': 'feedback', 'label': 'Feedback', 'field': 'feedback'}
                 ],
                 rows=self.get_results(),
                 pagination=10,
                 selection='none'
             ).classes('w-full')
             
-            # Add slot for actions column
             actions_template = '''
                 <q-td key="actions" :props="props">
                     <q-btn flat color="primary" label="Add Feedback" @click="$emit('feedback', props.row)" />
@@ -910,7 +1222,6 @@ class ResultsViewer:
             self.results_table.add_slot('body-cell-actions', actions_template)
             self.results_table.on('feedback', lambda e: self.show_feedback_dialog(e.args))
             
-            # Feedback dialog
             self.feedback_dialog = ui.dialog()
             with self.feedback_dialog:
                 with ui.card().classes('p-4'):
@@ -963,7 +1274,6 @@ class ResultsViewer:
         db = get_db()
         query = db.query(Result)
         
-        # Apply filters
         if batch_id:
             query = query.filter(Result.batch_run_id == batch_id)
         if doc_id:
@@ -975,10 +1285,8 @@ class ResultsViewer:
         filtered_results = []
         
         for r in results:
-            # Get the highest rating if there are multiple feedbacks
             max_rating = max([f.rating for f in r.feedback], default=0) if r.feedback else 0
             
-            # Apply rating filter
             if min_rating and max_rating < min_rating:
                 continue
             
@@ -1000,7 +1308,6 @@ class ResultsViewer:
         if not feedback_list:
             return 'No feedback yet'
         
-        # Show all feedback, sorted by rating (highest first)
         sorted_feedback = sorted(feedback_list, key=lambda x: (-x.rating, x.created_at))
         feedback_texts = []
         
@@ -1021,7 +1328,6 @@ class ResultsViewer:
             )
             self.results_table.rows = results
             
-            # Update statistics
             filters_applied = []
             if self.batch_filter.value:
                 filters_applied.append("batch run")
@@ -1069,9 +1375,11 @@ class ResultsViewer:
         except Exception as ex:
             ui.notify(f'Error submitting feedback: {str(ex)}', type='negative')
 
-# Main application setup
 @ui.page('/')
 def main_page():
+    # Add the persistent header
+    SelectionHeader()
+    
     with ui.tabs().classes('w-full') as tabs:
         ui.tab('Documents')
         ui.tab('Prompts')
@@ -1091,7 +1399,6 @@ def main_page():
         with ui.tab_panel('Results'):
             ResultsViewer()
 
-# Initialize batch processor if enabled
 if os.getenv('ENABLE_BATCH_PROCESSOR') == 'true':
     start_background_processor()
     ui.notify('Batch processor started')

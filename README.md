@@ -62,7 +62,3 @@ doc_analyzer/
 ## Database
 
 The application uses SQLite as the database backend. The database file will be created automatically at first run as `doc_analyzer.db` in the root directory.
-
-## Contributing
-
-Feel free to submit issues and enhancement requests! 
