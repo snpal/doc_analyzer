@@ -2,11 +2,11 @@ from nicegui import ui, app
 from datetime import datetime, timedelta
 import os
 from sqlalchemy.orm import Session
-from models import init_db, Document, Prompt, BatchRun, Result, Feedback, DocumentSet, DocumentQuery, PromptSet, PromptQuery
+from .models import init_db, Document, Prompt, BatchRun, Result, Feedback, DocumentSet, DocumentQuery, PromptSet, PromptQuery
 from typing import List, Optional
 import asyncio
-from batch_processor import start_background_processor
-from sample_data import initialize_sample_data
+from .batch_processor import start_background_processor
+from .sample_data import initialize_sample_data
 
 SessionLocal = init_db()
 
@@ -576,15 +576,101 @@ class PromptManager:
             ).classes('w-full') as self.prompts_table:
                 actions_template = '''
                     <q-td key="actions" :props="props">
-                        <q-btn flat color="secondary" label="Edit" @click="$emit('edit', props.row)" />
+                        <q-btn flat color="secondary" label="Feedback" @click="$emit('feedback', props.row)" />
                     </q-td>
                 '''
                 self.prompts_table.add_slot('body-cell-actions', actions_template)
                 self.prompts_table.on('edit', self.show_edit_dialog)
                 self.prompts_table.on('selection', self.handle_selection)
             
-            # Results container
-            self.results_container = ui.column().classes('w-full mt-4')
+            # Results section with filters
+            with ui.card().classes('w-full mt-6'):
+                ui.label('Results').classes('text-h6 mb-4')
+                
+                # Results filters
+                with ui.row().classes('w-full items-end mb-4'):
+                    with ui.column().classes('w-1/4 pr-2'):
+                        self.results_date_filter = ui.select(
+                            options=[
+                                {'label': 'Today', 'value': 'today'},
+                                {'label': 'Last 24 Hours', 'value': '24h'},
+                                {'label': 'Last 7 Days', 'value': '7d'},
+                                {'label': 'Last 30 Days', 'value': '30d'},
+                                {'label': 'All Time', 'value': 'all'}
+                            ],
+                            label='Date Range'
+                        ).classes('w-full')
+                        self.results_date_filter.value = 'today'  # Default to today
+                        self.results_date_filter.on('change', self.update_results)
+                    
+                    with ui.column().classes('w-1/4 pr-2'):
+                        self.results_batch_filter = ui.select(
+                            options=[{'label': 'All Batch Runs', 'value': None}] + self.get_batch_runs_options(),
+                            label='Batch Run'
+                        ).classes('w-full')
+                        self.results_batch_filter.on('change', self.update_results)
+                    
+                    with ui.column().classes('w-1/4 pr-2'):
+                        self.results_doc_filter = ui.select(
+                            options=[{'label': 'All Documents', 'value': None}] + self.get_documents_options(),
+                            label='Document'
+                        ).classes('w-full')
+                        self.results_doc_filter.on('change', self.update_results)
+                    
+                    with ui.column().classes('w-1/4'):
+                        self.results_prompt_filter = ui.select(
+                            options=[{'label': 'All Prompts', 'value': None}] + self.get_prompts_options_for_filter(),
+                            label='Prompt'
+                        ).classes('w-full')
+                        self.results_prompt_filter.on('change', self.update_results)
+                
+                # Results table
+                self.results_table = ui.table(
+                    columns=[
+                        {'name': 'expand', 'label': '', 'field': 'expand', 'style': 'width: 50px;'},
+                        {'name': 'batch_run', 'label': 'Batch Run', 'field': 'batch_run', 'sortable': True, 'style': 'width: 150px;'},
+                        {'name': 'document', 'label': 'Document', 'field': 'document', 'sortable': True, 'style': 'width: 150px;'},
+                        {'name': 'prompt', 'label': 'Prompt', 'field': 'prompt', 'sortable': True, 'style': 'width: 150px;'},
+                        {'name': 'response', 'label': 'Response', 'field': 'response', 'style': 'width: 200px; max-width: 200px; word-wrap: break-word; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'},
+                        {'name': 'created', 'label': 'Created', 'field': 'created_at', 'sortable': True, 'style': 'width: 120px;'},
+                        {'name': 'avg_rating', 'label': 'Avg Rating', 'field': 'avg_rating', 'style': 'width: 100px;'},
+                        {'name': 'feedback_count', 'label': 'Feedback Count', 'field': 'feedback_count', 'style': 'width: 120px;'},
+                        {'name': 'actions', 'label': 'Actions', 'field': 'actions', 'style': 'width: 150px;'},
+                    ],
+                    rows=self.get_results_data(),
+                    pagination=10,
+                    row_key='id',
+                    selection='none'
+                ).classes('w-full')
+                
+                expand_template = '''
+                    <q-td key="expand" :props="props">
+                        <q-btn flat :icon="props.row.expanded ? 'expand_less' : 'expand_more'" 
+                               @click="$emit('expand', props.row)" />
+                    </q-td>
+                '''
+                self.results_table.add_slot('body-cell-expand', expand_template)
+                
+                response_template = '''
+                    <q-td key="response" :props="props">
+                        <q-tooltip v-if="props.row.full_response && props.row.full_response.length > 100">
+                            {{ props.row.full_response }}
+                        </q-tooltip>
+                        <div style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                            {{ props.row.response }}
+                        </div>
+                    </q-td>
+                '''
+                self.results_table.add_slot('body-cell-response', response_template)
+                
+                actions_template = '''
+                    <q-td key="actions" :props="props">
+                        <q-btn flat color="secondary" label="Feedback" @click="$emit('feedback', props.row)" />
+                    </q-td>
+                '''
+                self.results_table.add_slot('body-cell-actions', actions_template)
+                self.results_table.on('feedback', self.show_feedback_dialog)
+                self.results_table.on('expand', self.handle_row_expand)
 
             # Save dialog
             self.save_dialog = ui.dialog()
@@ -638,6 +724,47 @@ class PromptManager:
                     with ui.row().classes('w-full justify-end'):
                         ui.button('Cancel', on_click=lambda: self.batch_request_dialog.close()).props('flat')
                         ui.button('Submit Request', on_click=self.submit_batch_request).props('color=primary')
+
+            # Result details dialog
+            self.result_details_dialog = ui.dialog()
+            with self.result_details_dialog:
+                with ui.card().classes('p-4'):
+                    ui.label('Result Details').classes('text-h6 mb-4')
+                    self.result_details_content = ui.textarea(
+                        label='Response',
+                        value=''
+                    ).props('disable').classes('w-full min-w-[600px] min-h-[300px]')
+                    
+                    ui.label('Feedback History').classes('text-h6 mt-4 mb-2')
+                    self.feedback_details = ui.column().classes('w-full')
+                    
+                    with ui.row().classes('w-full justify-end mt-4'):
+                        ui.button('Close', on_click=lambda: self.result_details_dialog.close()).props('flat')
+
+            # Feedback dialog
+            self.feedback_dialog = ui.dialog()
+            with self.feedback_dialog:
+                with ui.card().classes('p-4'):
+                    ui.label('Add Feedback').classes('text-h6 mb-4')
+                    self.current_result_id = None
+                    
+                    with ui.column().classes('w-full'):
+                        self.rating_select = ui.select(
+                            options=[
+                                {'label': '⭐ Poor', 'value': 1},
+                                {'label': '⭐⭐ Fair', 'value': 2},
+                                {'label': '⭐⭐⭐ Good', 'value': 3},
+                                {'label': '⭐⭐⭐⭐ Very Good', 'value': 4},
+                                {'label': '⭐⭐⭐⭐⭐ Excellent', 'value': 5},
+                            ],
+                            label='Rating'
+                        ).classes('w-full')
+                        
+                        self.feedback_comment = ui.textarea('Comment (optional)').classes('w-full')
+                        
+                        with ui.row().classes('w-full justify-end mt-4'):
+                            ui.button('Cancel', on_click=lambda: self.feedback_dialog.close()).props('flat')
+                            ui.button('Submit', on_click=self.submit_feedback).props('color=primary')
 
     def get_document_sets(self):
         """Get available document sets for selection"""
@@ -733,43 +860,63 @@ class PromptManager:
         
         try:
             # Clear previous results
-            self.results_container.clear()
             self.current_results = []  # Clear stored results
             
             db = get_db()
             prompts = db.query(Prompt).filter(Prompt.id.in_(self.selected_prompts)).all()
             
-            # Add save all button at the top
-            with ui.row().classes('w-full justify-end mb-4'):
-                ui.button('Save All Results', on_click=lambda: self.show_save_dialog()).props('color=primary')
+            # Create a temporary batch run for these results
+            temp_batch_run = BatchRun(
+                name=f"Manual Run - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+                status='completed',
+                completed_at=datetime.utcnow()
+            )
+            db.add(temp_batch_run)
             
-            # Create an expansion item for each document
+            # Add documents and prompts to the batch run
+            for doc_id in shared_state.selected_documents:
+                doc = db.query(Document).get(doc_id)
+                if doc:
+                    temp_batch_run.documents.append(doc)
+            
+            for prompt in prompts:
+                temp_batch_run.prompts.append(prompt)
+            
+            # Process each document with each prompt
             for doc_id in shared_state.selected_documents:
                 doc_details = shared_state.selected_document_details[doc_id]
+                doc = db.query(Document).get(doc_id)
                 
-                with ui.expansion(f"Document: {doc_details['name']}", icon='description').classes('w-full') as expansion:
-                    for prompt in prompts:
-                        # For now, use placeholder text
-                        result_text = f"Processed document '{doc_details['name']}' with prompt '{prompt.name}'\n"
-                        result_text += "This is a placeholder result. In a real implementation, this would be the output of your processing logic."
-                        
-                        # Store result for later saving
-                        result_data = {
-                            'document_id': doc_id,
-                            'document_name': doc_details['name'],
-                            'prompt_id': prompt.id,
-                            'prompt_name': prompt.name,
-                            'result': result_text
-                        }
-                        self.current_results.append(result_data)
-                        
-                        with ui.card().classes('w-full q-mb-md'):
-                            with ui.row().classes('w-full items-center justify-between'):
-                                ui.label(f"Prompt: {prompt.name}").classes('text-subtitle1')
-                                ui.button('Save', on_click=lambda r=result_data: self.show_save_dialog([r])).props('flat color=primary')
-                            ui.textarea(value=result_text).props('readonly').classes('w-full')
+                for prompt in prompts:
+                    # For now, use placeholder text
+                    result_text = f"Processed document '{doc_details['name']}' with prompt '{prompt.name}'\n"
+                    result_text += "This is a placeholder result. In a real implementation, this would be the output of your processing logic."
+                    
+                    # Create result in database
+                    result = Result(
+                        document=doc,
+                        prompt=prompt,
+                        batch_run=temp_batch_run,
+                        response=result_text
+                    )
+                    db.add(result)
+                    
+                    # Store result for later saving
+                    result_data = {
+                        'document_id': doc_id,
+                        'document_name': doc_details['name'],
+                        'prompt_id': prompt.id,
+                        'prompt_name': prompt.name,
+                        'result': result_text
+                    }
+                    self.current_results.append(result_data)
             
-            ui.notify('Processing complete!', type='positive')
+            db.commit()
+            
+            # Update the results table to show the new results
+            self.update_results()
+            
+            ui.notify('Processing complete! Results have been saved and are now visible in the table.', type='positive')
             
         except Exception as ex:
             ui.notify(f'Error running prompts: {str(ex)}', type='negative')
@@ -810,6 +957,9 @@ class PromptManager:
             db.commit()
             ui.notify('Results saved successfully!', type='positive')
             self.save_dialog.close()
+            
+            # Update the results table
+            self.update_results()
             
         except Exception as ex:
             ui.notify(f'Error saving results: {str(ex)}', type='negative')
@@ -920,18 +1070,191 @@ class PromptManager:
         db.add(prompt)
         db.commit()
         ui.notify('Prompt saved successfully!')
-        self.prompts_table.rows = self.get_prompts()
+        
+        # Clear form
         self.prompt_name.value = ''
         self.prompt_content.value = ''
+        
+        # Update prompts table
+        self.update_prompts()
 
     def update_selection_label(self):
         """Update the selected documents label"""
         count = shared_state.get_selected_count()
-        names = shared_state.get_selected_names()
         if count > 0:
-            self.selected_docs_label.text = f'{count} documents selected: {names}'
+            names = shared_state.get_selected_names()
+            self.selected_docs_label.text = f'{count} document(s) selected: {names}'
         else:
             self.selected_docs_label.text = 'No documents selected'
+
+    def get_batch_runs_options(self):
+        """Get available batch runs for filtering"""
+        db = get_db()
+        runs = db.query(BatchRun).all()
+        return [{'label': f"{r.name} ({r.status})", 'value': r.id} for r in runs]
+
+    def get_documents_options(self):
+        """Get available documents for filtering"""
+        db = get_db()
+        docs = db.query(Document).all()
+        return [{'label': d.name, 'value': d.id} for d in docs]
+
+    def get_prompts_options_for_filter(self):
+        """Get available prompts for filtering"""
+        db = get_db()
+        prompts = db.query(Prompt).all()
+        return [{'label': p.name, 'value': p.id} for p in prompts]
+
+    def get_results_data(self):
+        """Get results data based on current filters"""
+        try:
+            db = get_db()
+            query = db.query(Result)
+            
+            # Apply date filter
+            if self.results_date_filter.value and self.results_date_filter.value != 'all':
+                now = datetime.utcnow()
+                if self.results_date_filter.value == 'today':
+                    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                elif self.results_date_filter.value == '24h':
+                    cutoff = now - timedelta(hours=24)
+                elif self.results_date_filter.value == '7d':
+                    cutoff = now - timedelta(days=7)
+                elif self.results_date_filter.value == '30d':
+                    cutoff = now - timedelta(days=30)
+                query = query.filter(Result.created_at >= cutoff)
+            
+            # Apply batch filter
+            if self.results_batch_filter.value:
+                query = query.filter(Result.batch_run_id == self.results_batch_filter.value)
+            
+            # Apply document filter
+            if self.results_doc_filter.value:
+                query = query.filter(Result.document_id == self.results_doc_filter.value)
+            
+            # Apply prompt filter
+            if self.results_prompt_filter.value:
+                query = query.filter(Result.prompt_id == self.results_prompt_filter.value)
+            
+            # Order by most recent first
+            query = query.order_by(Result.created_at.desc())
+            
+            results = query.all()
+            return [{
+                'id': r.id,
+                'expand': None,  # Rendered by slot
+                'batch_run': r.batch_run.name if r.batch_run else 'N/A',
+                'document': r.document.name if r.document else 'N/A',
+                'prompt': r.prompt.name if r.prompt else 'N/A',
+                'response': r.response[:100] + '...' if len(r.response) > 100 else r.response,  # Truncate to 100 chars
+                'full_response': r.response,  # Store full response for expand functionality
+                'created_at': format_datetime(r.created_at),
+                'avg_rating': self.calculate_average_rating(r.feedback),
+                'feedback_count': len(r.feedback) if r.feedback else 0,
+                'actions': None  # Rendered by slot
+            } for r in results]
+        except Exception as ex:
+            ui.notify(f'Error getting results data: {str(ex)}', type='negative')
+            return []
+
+    def calculate_average_rating(self, feedback_list):
+        """Calculate the average rating from a list of feedback"""
+        if not feedback_list:
+            return 'N/A'
+        
+        total_rating = sum(f.rating for f in feedback_list)
+        return f"{total_rating / len(feedback_list):.2f}" if len(feedback_list) > 0 else 'N/A'
+
+    def show_result_details(self, row):
+        """Show result details in a dialog"""
+        try:
+            # Use the full response from the row data
+            full_response = row.get('full_response', row.get('response', ''))
+            
+            # Show the full result text
+            self.result_details_content.value = full_response
+            
+            # Get feedback from database
+            db = get_db()
+            result = db.query(Result).get(row['id'])
+            
+            if result:
+                # Clear and populate feedback details
+                self.feedback_details.clear()
+                with self.feedback_details:
+                    if result.feedback:
+                        for fb in sorted(result.feedback, key=lambda x: x.created_at, reverse=True):
+                            with ui.card().classes('w-full mb-2'):
+                                with ui.row().classes('w-full items-center justify-between'):
+                                    stars = '⭐' * fb.rating
+                                    ui.label(f"{stars} ({fb.rating}/5)").classes('text-subtitle1')
+                                    ui.label(f"Added: {format_datetime(fb.created_at)}").classes('text-sm text-gray-600')
+                                if fb.comment:
+                                    ui.label(fb.comment).classes('text-sm mt-1')
+                    else:
+                        ui.label('No feedback yet').classes('text-sm text-gray-600')
+                
+                self.result_details_dialog.open()
+            else:
+                ui.notify('Result not found', type='negative')
+        except Exception as ex:
+            ui.notify(f'Error showing result details: {str(ex)}', type='negative')
+
+    def update_results(self):
+        """Update the results table based on current filters"""
+        batch_id = self.results_batch_filter.value
+        doc_id = self.results_doc_filter.value
+        prompt_id = self.results_prompt_filter.value
+        min_rating = self.rating_filter.value
+        
+        # Get filtered results
+        results = self.get_results(batch_id, doc_id, prompt_id, min_rating)
+        
+        # Update the table
+        self.results_table.rows = results
+        
+        # Update stats
+        count = len(results)
+        self.stats_label.text = f'Showing {count} result{"s" if count != 1 else ""}'
+
+    def show_feedback_dialog(self, row):
+        """Show feedback dialog for a result"""
+        self.current_result_id = row['id']
+        self.rating_select.value = None
+        self.feedback_comment.value = ''
+        self.feedback_dialog.open()
+
+    def submit_feedback(self):
+        """Submit feedback for a result"""
+        if not self.rating_select.value:
+            ui.notify('Please select a rating', type='warning')
+            return
+        
+        try:
+            db = get_db()
+            feedback = Feedback(
+                result_id=self.current_result_id,
+                rating=self.rating_select.value,
+                comment=self.feedback_comment.value
+            )
+            db.add(feedback)
+            db.commit()
+            
+            ui.notify('Feedback submitted successfully', type='positive')
+            self.feedback_dialog.close()
+            self.update_results()
+            
+        except Exception as ex:
+            ui.notify(f'Error submitting feedback: {str(ex)}', type='negative')
+
+    def handle_row_expand(self, e):
+        """Handle row expand event"""
+        try:
+            if isinstance(e.args, dict):
+                row_data = e.args
+                self.show_result_details(row_data)
+        except Exception as ex:
+            ui.notify(f'Error handling row expand: {str(ex)}', type='negative')
 
 class BatchRunScheduler:
     def __init__(self):
@@ -1201,26 +1524,50 @@ class ResultsViewer:
             
             self.results_table = ui.table(
                 columns=[
-                    {'name': 'actions', 'label': 'Actions', 'field': 'actions'},
-                    {'name': 'batch_run', 'label': 'Batch Run', 'field': 'batch_run'},
-                    {'name': 'document', 'label': 'Document', 'field': 'document'},
-                    {'name': 'prompt', 'label': 'Prompt', 'field': 'prompt'},
-                    {'name': 'response', 'label': 'Response', 'field': 'response'},
-                    {'name': 'created', 'label': 'Created', 'field': 'created_at'},
-                    {'name': 'feedback', 'label': 'Feedback', 'field': 'feedback'}
+                    {'name': 'expand', 'label': '', 'field': 'expand', 'style': 'width: 50px;'},
+                    {'name': 'batch_run', 'label': 'Batch Run', 'field': 'batch_run', 'sortable': True, 'style': 'width: 150px;'},
+                    {'name': 'document', 'label': 'Document', 'field': 'document', 'sortable': True, 'style': 'width: 150px;'},
+                    {'name': 'prompt', 'label': 'Prompt', 'field': 'prompt', 'sortable': True, 'style': 'width: 150px;'},
+                    {'name': 'response', 'label': 'Response', 'field': 'response', 'style': 'width: 200px; max-width: 200px; word-wrap: break-word; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'},
+                    {'name': 'created', 'label': 'Created', 'field': 'created_at', 'sortable': True, 'style': 'width: 120px;'},
+                    {'name': 'avg_rating', 'label': 'Avg Rating', 'field': 'avg_rating', 'style': 'width: 100px;'},
+                    {'name': 'feedback_count', 'label': 'Feedback Count', 'field': 'feedback_count', 'style': 'width: 120px;'},
+                    {'name': 'actions', 'label': 'Actions', 'field': 'actions', 'style': 'width: 150px;'},
                 ],
                 rows=self.get_results(),
                 pagination=10,
+                row_key='id',
                 selection='none'
             ).classes('w-full')
             
+            expand_template = '''
+                <q-td key="expand" :props="props">
+                    <q-btn flat :icon="props.row.expanded ? 'expand_less' : 'expand_more'" 
+                           @click="$emit('expand', props.row)" />
+                </q-td>
+            '''
+            self.results_table.add_slot('body-cell-expand', expand_template)
+            
+            response_template = '''
+                <q-td key="response" :props="props">
+                    <q-tooltip v-if="props.row.full_response && props.row.full_response.length > 100">
+                        {{ props.row.full_response }}
+                    </q-tooltip>
+                    <div style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        {{ props.row.response }}
+                    </div>
+                </q-td>
+            '''
+            self.results_table.add_slot('body-cell-response', response_template)
+            
             actions_template = '''
                 <q-td key="actions" :props="props">
-                    <q-btn flat color="primary" label="Add Feedback" @click="$emit('feedback', props.row)" />
+                    <q-btn flat color="secondary" label="Feedback" @click="$emit('feedback', props.row)" />
                 </q-td>
             '''
             self.results_table.add_slot('body-cell-actions', actions_template)
-            self.results_table.on('feedback', lambda e: self.show_feedback_dialog(e.args))
+            self.results_table.on('feedback', self.show_feedback_dialog)
+            self.results_table.on('expand', self.handle_row_expand)
             
             self.feedback_dialog = ui.dialog()
             with self.feedback_dialog:
@@ -1246,6 +1593,22 @@ class ResultsViewer:
                             ui.button('Cancel', on_click=lambda: self.feedback_dialog.close()).props('flat')
                             ui.button('Submit', on_click=self.submit_feedback).props('color=primary')
 
+            # Result details dialog
+            self.result_details_dialog = ui.dialog()
+            with self.result_details_dialog:
+                with ui.card().classes('p-4'):
+                    ui.label('Result Details').classes('text-h6 mb-4')
+                    self.result_details_content = ui.textarea(
+                        label='Response',
+                        value=''
+                    ).props('disable').classes('w-full min-w-[600px] min-h-[300px]')
+                    
+                    ui.label('Feedback History').classes('text-h6 mt-4 mb-2')
+                    self.feedback_details = ui.column().classes('w-full')
+                    
+                    with ui.row().classes('w-full justify-end mt-4'):
+                        ui.button('Close', on_click=lambda: self.result_details_dialog.close()).props('flat')
+
     def clear_filters(self):
         """Reset all filters to their default values"""
         self.batch_filter.value = None
@@ -1253,6 +1616,23 @@ class ResultsViewer:
         self.prompt_filter.value = None
         self.rating_filter.value = None
         self.update_results()
+
+    def update_results(self):
+        """Update the results table based on current filters"""
+        batch_id = self.batch_filter.value
+        doc_id = self.doc_filter.value
+        prompt_id = self.prompt_filter.value
+        min_rating = self.rating_filter.value
+        
+        # Get filtered results
+        results = self.get_results(batch_id, doc_id, prompt_id, min_rating)
+        
+        # Update the table
+        self.results_table.rows = results
+        
+        # Update stats
+        count = len(results)
+        self.stats_label.text = f'Showing {count} result{"s" if count != 1 else ""}'
 
     def get_batch_runs(self):
         db = get_db()
@@ -1292,68 +1672,72 @@ class ResultsViewer:
             
             filtered_results.append({
                 'id': r.id,
-                'batch_run': r.batch_run.name,
-                'document': r.document.name,
-                'prompt': r.prompt.name,
-                'response': r.response,
+                'expand': None,  # Rendered by slot
+                'batch_run': r.batch_run.name if r.batch_run else 'N/A',
+                'document': r.document.name if r.document else 'N/A',
+                'prompt': r.prompt.name if r.prompt else 'N/A',
+                'response': r.response[:100] + '...' if len(r.response) > 100 else r.response,  # Truncate to 100 chars
+                'full_response': r.response,  # Store full response for expand functionality
                 'created_at': format_datetime(r.created_at),
-                'feedback': self.format_feedback(r.feedback),
+                'avg_rating': self.calculate_average_rating(r.feedback),
+                'feedback_count': len(r.feedback),
                 'actions': None  # Rendered by slot
             })
         
         return filtered_results
 
-    def format_feedback(self, feedback_list):
-        """Format feedback for display in the table"""
+    def calculate_average_rating(self, feedback_list):
+        """Calculate the average rating from a list of feedback"""
         if not feedback_list:
-            return 'No feedback yet'
+            return 'N/A'
         
-        sorted_feedback = sorted(feedback_list, key=lambda x: (-x.rating, x.created_at))
-        feedback_texts = []
-        
-        for fb in sorted_feedback:
-            stars = '⭐' * fb.rating
-            comment = f": {fb.comment}" if fb.comment else ""
-            feedback_texts.append(f"{stars}{comment}")
-        
-        return '\n'.join(feedback_texts)
+        total_rating = sum(f.rating for f in feedback_list)
+        return f"{total_rating / len(feedback_list):.2f}" if len(feedback_list) > 0 else 'N/A'
 
-    def update_results(self):
+    def show_result_details(self, row):
+        """Show result details in a dialog"""
         try:
-            results = self.get_results(
-                batch_id=self.batch_filter.value,
-                doc_id=self.doc_filter.value,
-                prompt_id=self.prompt_filter.value,
-                min_rating=self.rating_filter.value
-            )
-            self.results_table.rows = results
+            # Use the full response from the row data
+            full_response = row.get('full_response', row.get('response', ''))
             
-            filters_applied = []
-            if self.batch_filter.value:
-                filters_applied.append("batch run")
-            if self.doc_filter.value:
-                filters_applied.append("document")
-            if self.prompt_filter.value:
-                filters_applied.append("prompt")
-            if self.rating_filter.value:
-                filters_applied.append(f"{self.rating_filter.value}+ star rating")
+            # Show the full result text
+            self.result_details_content.value = full_response
             
-            if filters_applied:
-                filter_text = ", ".join(filters_applied)
-                self.stats_label.text = f"Showing {len(results)} results filtered by {filter_text}"
+            # Get feedback from database
+            db = get_db()
+            result = db.query(Result).get(row['id'])
+            
+            if result:
+                # Clear and populate feedback details
+                self.feedback_details.clear()
+                with self.feedback_details:
+                    if result.feedback:
+                        for fb in sorted(result.feedback, key=lambda x: x.created_at, reverse=True):
+                            with ui.card().classes('w-full mb-2'):
+                                with ui.row().classes('w-full items-center justify-between'):
+                                    stars = '⭐' * fb.rating
+                                    ui.label(f"{stars} ({fb.rating}/5)").classes('text-subtitle1')
+                                    ui.label(f"Added: {format_datetime(fb.created_at)}").classes('text-sm text-gray-600')
+                                if fb.comment:
+                                    ui.label(fb.comment).classes('text-sm mt-1')
+                    else:
+                        ui.label('No feedback yet').classes('text-sm text-gray-600')
+                
+                self.result_details_dialog.open()
             else:
-                self.stats_label.text = f"Showing all {len(results)} results"
-            
+                ui.notify('Result not found', type='negative')
         except Exception as ex:
-            ui.notify(f'Error updating results: {str(ex)}', type='negative')
+            ui.notify(f'Error showing result details: {str(ex)}', type='negative')
 
     def show_feedback_dialog(self, row):
+        """Show feedback dialog for a result"""
         self.current_result_id = row['id']
         self.rating_select.value = None
         self.feedback_comment.value = ''
         self.feedback_dialog.open()
 
     def submit_feedback(self):
+        """Submit feedback for a result"""
         if not self.rating_select.value:
             ui.notify('Please select a rating', type='warning')
             return
@@ -1374,6 +1758,15 @@ class ResultsViewer:
             
         except Exception as ex:
             ui.notify(f'Error submitting feedback: {str(ex)}', type='negative')
+
+    def handle_row_expand(self, e):
+        """Handle row expand event"""
+        try:
+            if isinstance(e.args, dict):
+                row_data = e.args
+                self.show_result_details(row_data)
+        except Exception as ex:
+            ui.notify(f'Error handling row expand: {str(ex)}', type='negative')
 
 @ui.page('/')
 def main_page():

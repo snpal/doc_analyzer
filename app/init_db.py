@@ -1,5 +1,5 @@
-from models import Base, init_db
-from sample_data import initialize_sample_data
+from .models import Base, init_db
+from .sample_data import initialize_sample_data
 import os
 
 def init_database():

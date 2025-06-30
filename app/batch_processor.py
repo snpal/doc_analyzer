@@ -1,7 +1,8 @@
 import asyncio
+import time
 from datetime import datetime
-from sqlalchemy import and_
-from models import BatchRun, Result, Document, DocumentSet, DocumentQuery, init_db
+from sqlalchemy.orm import Session
+from .models import BatchRun, Result, Document, DocumentSet, DocumentQuery, init_db
 import logging
 
 logging.basicConfig(level=logging.INFO)

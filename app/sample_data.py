@@ -1,4 +1,4 @@
-from models import Prompt, PromptSet, PromptQuery, Document, BatchRun, Result, Feedback, init_db
+from .models import Prompt, PromptSet, PromptQuery, Document, BatchRun, Result, Feedback, init_db
 from datetime import datetime, timedelta
 
 sample_documents = [
